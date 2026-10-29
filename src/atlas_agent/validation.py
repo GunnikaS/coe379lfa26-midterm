@@ -12,15 +12,40 @@ def validate_request_binding(
     *,
     request: LabRequest,
 ) -> list[str]:
-    """TODO 3.1: Prevent identity and resolved-field substitution."""
-    del decision, request
-    return []
+    errors = []
+    if "user_id" in decision.arguments:
+        if decision.arguments.get("user_id") != request.authenticated_user_id:
+            errors.append("user_id_must_match_authenticated_user")
+
+    for field in {"project_id", "resource_id", "start", "end"}:
+        if field not in decision.arguments:
+            continue
+        if getattr(request, field) is None:
+            errors.append(f"{field}_unresolved_in_request")
+        elif decision.arguments.get(field) != getattr(request, field):
+            errors.append(f"{field}_does_not_match_request")
+    return errors
 
 
 def validate_reservation_preconditions(context: ReservationContext) -> list[str]:
-    """TODO 3.2: Return an error for every required context fact that is false."""
-    del context
-    return []
+    errors = []
+    error_codes = {
+        "arguments_complete": "required_arguments_missing",
+        "policy_retrieved": "required_policy_missing",
+        "authorizations_checked": "authorizations_not_checked",
+        "resource_status_checked": "resource_status_not_checked",
+        "project_authorized": "project_not_authorized",
+        "qualification_current": "required_qualification_missing",
+        "resource_available": "resource_unavailable",
+        "calibration_current": "calibration_not_current",
+        "maintenance_clear": "maintenance_not_clear",
+        "after_hours_approval_satisfied": "after_hours_approval_missing",
+    }
+
+    for field, error_code in error_codes.items():
+        if not getattr(context, field):
+            errors.append(error_code)
+    return errors
 
 
 def validate_proposed_tool_call(
@@ -53,6 +78,31 @@ def retrieved_passage_ids(trace: list[TraceEvent]) -> set[str]:
 def validate_final_response(
     response: AgentResponse, trace: list[TraceEvent]
 ) -> list[str]:
-    """TODO 3.3: Validate citations, claimed actions, and final status."""
-    del response, trace
-    return []
+    errors = []
+
+    retrieved_passages = retrieved_passage_ids(trace=trace)
+    for citation in response.citations:
+        if citation not in retrieved_passages:
+            errors.append(f"citations_not_retrieved")
+
+    completed_actions = response.completed_actions
+    successful_mutations = []
+    for event in trace:
+        if event.mutating == True and event.observation.ok == True:
+            # then the tool call made a successful mutation
+            successful_mutations.append(event.observation.tool)
+    for action in response.completed_actions:
+        if action not in successful_mutations:
+            errors.append(f"completed_action_not_in_successful_trace")
+
+    if response.status == "completed":
+        if len(successful_mutations) == 0:
+            errors.append("completed_without_successful_mutation")
+        if len(completed_actions) == 0:
+            errors.append("completed_without_completed_actions")
+    else:
+        if len(successful_mutations) != 0:
+            errors.append("not_completed_with_successful_mutation")
+        if len(completed_actions) != 0:
+            errors.append("not_completed_with_completed_actions")
+    return errors
